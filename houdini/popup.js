@@ -5,12 +5,15 @@
 const SEVERITIES = ['Critical', 'Major', 'Minor'];
 
 const DEFAULT_STATE = {
-  visibilityState: {
-    'Critical': true,
-    'Major': true,
-    'Minor': true
+  coderabbit: {
+    visibilityState: {
+      'Critical': true,
+      'Major': true,
+      'Minor': true
+    },
+    showAllState: true
   },
-  showAllState: true
+  customBots: {}  // { "botName": true|false }
 };
 
 // ============================================================================
@@ -31,8 +34,11 @@ class FilterState {
    */
   getDefaultState() {
     return {
-      visibilityState: { ...DEFAULT_STATE.visibilityState },
-      showAllState: DEFAULT_STATE.showAllState
+      coderabbit: {
+        visibilityState: { ...DEFAULT_STATE.coderabbit.visibilityState },
+        showAllState: DEFAULT_STATE.coderabbit.showAllState
+      },
+      customBots: { ...DEFAULT_STATE.customBots }
     };
   }
 
@@ -45,15 +51,27 @@ class FilterState {
     }
 
     const validated = {
-      visibilityState: {},
-      showAllState: state.showAllState ?? true
+      coderabbit: {
+        visibilityState: {},
+        showAllState: state.coderabbit?.showAllState ?? true
+      },
+      customBots: {}
     };
 
-    // Ensure all severities exist with boolean values
+    // Validate CodeRabbit severities
     SEVERITIES.forEach(severity => {
-      validated.visibilityState[severity] = 
-        state.visibilityState?.[severity] ?? true;
+      validated.coderabbit.visibilityState[severity] = 
+        state.coderabbit?.visibilityState?.[severity] ?? true;
     });
+
+    // Validate custom bots (ensure all values are boolean)
+    if (state.customBots && typeof state.customBots === 'object') {
+      Object.entries(state.customBots).forEach(([botName, showAll]) => {
+        if (typeof botName === 'string' && botName.trim()) {
+          validated.customBots[botName.toLowerCase().trim()] = Boolean(showAll);
+        }
+      });
+    }
 
     return validated;
   }
@@ -89,8 +107,8 @@ class FilterState {
       }
 
       // Load from global storage
-      const result = await chrome.storage.sync.get(['visibilityState', 'showAllState']);
-      console.log('Loading from global storage');
+      const result = await chrome.storage.sync.get(['coderabbit', 'customBots']);
+      console.log('Loading from global storage:', result);
       this.currentState = this.validateState(result);
       return this.currentState;
     } catch (error) {
@@ -113,8 +131,11 @@ class FilterState {
       const sessionKey = this.getSessionKey(tabId);
       await chrome.storage.session.set({
         [sessionKey]: {
-          visibilityState: { ...this.currentState.visibilityState },
-          showAllState: this.currentState.showAllState
+          coderabbit: {
+            visibilityState: { ...this.currentState.coderabbit.visibilityState },
+            showAllState: this.currentState.coderabbit.showAllState
+          },
+          customBots: { ...this.currentState.customBots }
         }
       });
       console.log('Saved to session storage for tab', tabId);
@@ -135,10 +156,13 @@ class FilterState {
       }
 
       await chrome.storage.sync.set({
-        visibilityState: this.currentState.visibilityState,
-        showAllState: this.currentState.showAllState
+        coderabbit: {
+          visibilityState: this.currentState.coderabbit.visibilityState,
+          showAllState: this.currentState.coderabbit.showAllState
+        },
+        customBots: this.currentState.customBots
       });
-      console.log('Saved as global defaults');
+      console.log('Saved as global defaults:', this.currentState);
       return true;
     } catch (error) {
       console.error('Error saving defaults:', error);
@@ -147,24 +171,55 @@ class FilterState {
   }
 
   /**
-   * Update visibility for a specific severity
+   * Update visibility for a specific severity (CodeRabbit)
    */
   setSeverityVisibility(severity, isVisible) {
     if (SEVERITIES.includes(severity)) {
-      this.currentState.visibilityState[severity] = Boolean(isVisible);
+      this.currentState.coderabbit.visibilityState[severity] = Boolean(isVisible);
     }
   }
 
   /**
-   * Set show all state
+   * Set show all state (CodeRabbit)
    */
   setShowAll(showAll) {
-    this.currentState.showAllState = Boolean(showAll);
+    this.currentState.coderabbit.showAllState = Boolean(showAll);
     
     // Update all severities when show/hide all is toggled
     SEVERITIES.forEach(severity => {
-      this.currentState.visibilityState[severity] = showAll;
+      this.currentState.coderabbit.visibilityState[severity] = showAll;
     });
+  }
+
+  /**
+   * Add or update a custom bot filter
+   * @param {string} botName - Name of the bot (will be normalized to lowercase)
+   * @param {boolean} showAll - true = show, false = hide
+   */
+  setCustomBot(botName, showAll) {
+    if (typeof botName === 'string' && botName.trim()) {
+      const normalizedName = botName.toLowerCase().trim();
+      this.currentState.customBots[normalizedName] = Boolean(showAll);
+    }
+  }
+
+  /**
+   * Remove a custom bot filter
+   * @param {string} botName - Name of the bot to remove
+   */
+  removeCustomBot(botName) {
+    if (typeof botName === 'string') {
+      const normalizedName = botName.toLowerCase().trim();
+      delete this.currentState.customBots[normalizedName];
+    }
+  }
+
+  /**
+   * Get list of custom bots being filtered
+   * @returns {Array} Array of bot names
+   */
+  getCustomBotNames() {
+    return Object.keys(this.currentState.customBots);
   }
 
   /**
@@ -172,8 +227,11 @@ class FilterState {
    */
   get() {
     return {
-      visibilityState: { ...this.currentState.visibilityState },
-      showAllState: this.currentState.showAllState
+      coderabbit: {
+        visibilityState: { ...this.currentState.coderabbit.visibilityState },
+        showAllState: this.currentState.coderabbit.showAllState
+      },
+      customBots: { ...this.currentState.customBots }
     };
   }
 }
@@ -212,6 +270,7 @@ class UIController {
 
       // Update UI to reflect loaded state
       this.updateShowHideAllButtons();
+      this.updateCustomBotUI();
 
       // Scan and build severity controls
       const severities = await this.scanSeverities(tab.id);
@@ -301,7 +360,7 @@ class UIController {
       const count = availableSeverities[severity] || 0;
       if (count === 0) return; // Skip if no comments
 
-      const group = this.createSeverityGroup(severity, count, state.visibilityState[severity]);
+      const group = this.createSeverityGroup(severity, count, state.coderabbit.visibilityState[severity]);
       container.appendChild(group);
     });
   }
@@ -431,13 +490,234 @@ class UIController {
     const showAllBtn = document.getElementById('showAllBtn');
     const hideAllBtn = document.getElementById('hideAllBtn');
 
-    if (state.showAllState) {
+    if (state.coderabbit.showAllState) {
       showAllBtn?.classList.add('active');
       hideAllBtn?.classList.remove('active');
     } else {
       showAllBtn?.classList.remove('active');
       hideAllBtn?.classList.add('active');
     }
+  }
+
+  /**
+   * Update custom bot UI to reflect current state
+   */
+  updateCustomBotUI() {
+    const state = filterState.get();
+    const listContainer = document.getElementById('customBotList');
+    const allToggleContainer = document.getElementById('customBotAllToggle');
+    
+    if (!listContainer) return;
+
+    // Clear existing list
+    listContainer.innerHTML = '';
+
+    // Display current custom bots
+    const botNames = Object.keys(state.customBots);
+    
+    // Show/hide "All" toggle based on whether there are custom bots
+    if (allToggleContainer) {
+      if (botNames.length === 0) {
+        allToggleContainer.style.display = 'none';
+      } else {
+        allToggleContainer.style.display = '';
+        this.updateCustomBotAllButtons();
+      }
+    }
+
+    if (botNames.length === 0) {
+      listContainer.innerHTML = '<div class="no-bots">No custom bot filters</div>';
+      return;
+    }
+
+    botNames.forEach(botName => {
+      const showAll = state.customBots[botName];
+      const item = this.createCustomBotItem(botName, showAll);
+      listContainer.appendChild(item);
+    });
+  }
+
+  /**
+   * Update the "All" toggle buttons for custom bots
+   */
+  updateCustomBotAllButtons() {
+    const state = filterState.get();
+    const botNames = Object.keys(state.customBots);
+    
+    if (botNames.length === 0) return;
+
+    // Check if all bots are shown or all are hidden
+    const allShown = botNames.every(name => state.customBots[name] === true);
+    const allHidden = botNames.every(name => state.customBots[name] === false);
+
+    const showBtn = document.getElementById('customBotShowAllBtn');
+    const hideBtn = document.getElementById('customBotHideAllBtn');
+
+    if (showBtn && hideBtn) {
+      if (allShown) {
+        showBtn.classList.add('active');
+        hideBtn.classList.remove('active');
+      } else if (allHidden) {
+        showBtn.classList.remove('active');
+        hideBtn.classList.add('active');
+      } else {
+        // Mixed state - no button active
+        showBtn.classList.remove('active');
+        hideBtn.classList.remove('active');
+      }
+    }
+  }
+
+  /**
+   * Create a custom bot list item
+   */
+    createCustomBotItem(botName, showAll) {
+    const item = document.createElement('div');
+    item.className = 'custom-bot-item';
+
+    const removeBtn = document.createElement('button');
+    removeBtn.className = 'remove-btn';
+    removeBtn.textContent = '×';;
+    removeBtn.title = 'Remove filter';
+    removeBtn.onclick = () => this.handleRemoveCustomBot(botName);
+
+    const nameLabel = document.createElement('div');
+    nameLabel.className = 'bot-name';
+    nameLabel.textContent = botName;
+
+    const buttons = document.createElement('div');
+    buttons.className = 'toggle-buttons';
+
+    const showBtn = this.createToggleButton('Show', showAll, () => {
+        this.handleCustomBotToggle(botName, true);
+    });
+
+    const hideBtn = this.createToggleButton('Hide', !showAll, () => {
+        this.handleCustomBotToggle(botName, false);
+    });
+
+    buttons.appendChild(showBtn);
+    buttons.appendChild(hideBtn);
+
+    item.appendChild(removeBtn);    // First: Remove button
+    item.appendChild(nameLabel);    // Second: Bot name
+    item.appendChild(buttons);      // Third: Show/Hide buttons
+
+    return item;
+    }
+
+  /**
+   * Handle adding custom bots from input
+   */
+  async handleAddCustomBots() {
+    const input = document.getElementById('botNameInput');
+    if (!input) return;
+
+    const rawInput = input.value.trim();
+    if (!rawInput) {
+      this.showStatus('Please enter bot name(s)', 'error');
+      return;
+    }
+
+    // Parse comma-separated bot names
+    const botNames = rawInput.split(',')
+      .map(name => name.trim().toLowerCase())
+      .filter(name => name.length > 0);
+
+    if (botNames.length === 0) {
+      this.showStatus('Please enter valid bot name(s)', 'error');
+      return;
+    }
+
+    // Check which bots are new
+    const state = filterState.get();
+    const newBots = botNames.filter(name => !(name in state.customBots));
+    
+    if (newBots.length === 0) {
+      this.showStatus('Bot(s) already filtered', 'info');
+      return;
+    }
+
+    // Add new bots with default state (hidden)
+    newBots.forEach(botName => {
+      filterState.setCustomBot(botName, false); // Default to hidden
+    });
+
+    // Clear input
+    input.value = '';
+
+    // Update UI
+    this.updateCustomBotUI();
+
+    // Apply filters
+    await this.applyFilters();
+
+    this.showStatus(`Added ${newBots.length} bot filter(s)`, 'success');
+  }
+
+  /**
+   * Handle toggling a custom bot's visibility
+   */
+  async handleCustomBotToggle(botName, showAll) {
+    try {
+      filterState.setCustomBot(botName, showAll);
+      this.updateCustomBotUI();
+      await this.applyFilters();
+    } catch (error) {
+      console.error('Error toggling custom bot:', error);
+      this.showStatus('Error toggling bot visibility', 'error');
+    }
+  }
+
+  /**
+   * Handle removing a custom bot filter
+   */
+  async handleRemoveCustomBot(botName) {
+    try {
+      filterState.removeCustomBot(botName);
+      this.updateCustomBotUI();
+      await this.applyFilters();
+      this.showStatus(`Removed filter for ${botName}`, 'success');
+    } catch (error) {
+      console.error('Error removing custom bot:', error);
+      this.showStatus('Error removing bot filter', 'error');
+    }
+  }
+
+  /**
+   * Handle show all custom bots
+   */
+  async handleShowAllCustomBots() {
+    const botNames = filterState.getCustomBotNames();
+    if (botNames.length === 0) {
+      this.showStatus('No custom bot filters', 'info');
+      return;
+    }
+
+    botNames.forEach(botName => {
+      filterState.setCustomBot(botName, true);
+    });
+
+    this.updateCustomBotUI();
+    await this.applyFilters();
+  }
+
+  /**
+   * Handle hide all custom bots
+   */
+  async handleHideAllCustomBots() {
+    const botNames = filterState.getCustomBotNames();
+    if (botNames.length === 0) {
+      this.showStatus('No custom bot filters', 'info');
+      return;
+    }
+
+    botNames.forEach(botName => {
+      filterState.setCustomBot(botName, false);
+    });
+
+    this.updateCustomBotUI();
+    await this.applyFilters();
   }
 
   /**
@@ -458,7 +738,7 @@ class UIController {
       chrome.scripting.executeScript({
         target: { tabId: this.currentTabId },
         function: applyVisibilityFilter,
-        args: [state.visibilityState, state.showAllState]
+        args: [state.coderabbit.visibilityState, state.coderabbit.showAllState, state.customBots]
       }, (results) => {
         if (chrome.runtime.lastError) {
           console.error('Error applying filter:', chrome.runtime.lastError);
@@ -478,6 +758,18 @@ class UIController {
     const success = await filterState.saveAsDefault();
     if (success) {
       this.showStatus('Saved as default settings', 'success');
+    } else {
+      this.showStatus('Error saving defaults', 'error');
+    }
+  }
+
+  /**
+   * Save current settings as global defaults
+   */
+  async handleSaveAsDefault() {
+    const success = await filterState.saveAsDefault();
+    if (success) {
+      this.showStatus('Saved as default settings ✓', 'success');
     } else {
       this.showStatus('Error saving defaults', 'error');
     }
@@ -514,8 +806,23 @@ const ui = new UIController();
 
 document.addEventListener('DOMContentLoaded', () => ui.init());
 
+// CodeRabbit filter buttons
 document.getElementById('showAllBtn')?.addEventListener('click', () => ui.handleShowAll());
 document.getElementById('hideAllBtn')?.addEventListener('click', () => ui.handleHideAll());
+
+// Custom bot buttons
+document.getElementById('addBotBtn')?.addEventListener('click', () => ui.handleAddCustomBots());
+document.getElementById('customBotShowAllBtn')?.addEventListener('click', () => ui.handleShowAllCustomBots());
+document.getElementById('customBotHideAllBtn')?.addEventListener('click', () => ui.handleHideAllCustomBots());
+
+// Allow Enter key to add bots
+document.getElementById('botNameInput')?.addEventListener('keypress', (e) => {
+  if (e.key === 'Enter') {
+    ui.handleAddCustomBots();
+  }
+});
+
+// Save as default button
 document.getElementById('saveAsDefaultBtn')?.addEventListener('click', () => ui.handleSaveAsDefault());
 
 // ============================================================================
@@ -573,22 +880,27 @@ function getAvailableSeverities() {
  * Apply visibility filters to CodeRabbit comments based on severity and show/hide state
  * This function is injected into the page context to manipulate the DOM
  * 
- * @param {Object} visibilityState - Object mapping severity names to boolean visibility
- * @param {boolean} showAllState - Whether "Show All" is active
+ * @param {Object} coderabbitVisibilityState - Object mapping severity names to boolean visibility
+ * @param {boolean} coderabbitShowAllState - Whether "Show All" is active for CodeRabbit
+ * @param {Object} customBots - Object mapping bot names to boolean visibility
  */
-function applyVisibilityFilter(visibilityState, showAllState) {
+function applyVisibilityFilter(coderabbitVisibilityState, coderabbitShowAllState, customBots) {
   const SELECTORS = {
     TIMELINE_ITEM: '.js-timeline-item',
     TURBO_FRAME: 'turbo-frame[id^="review-thread-or-comment-id-"]',
     INLINE_CONTAINER: '.js-inline-comments-container',
     COMMENT_BODY: '.comment-body',
     CODERABBIT_AUTHOR_LINK: 'a.author[href="/apps/coderabbitai"]',
+    AUTHOR_LINK: 'a.author',
     SEVERITY_EM: 'em'
   };
 
   try {
     const allTimelineItems = document.querySelectorAll(SELECTORS.TIMELINE_ITEM);
 
+    /**
+     * Helper function to detect severity from a turbo-frame element
+     */
     function getTurboFrameSeverity(turboFrame) {
       try {
         const inlineContainers = turboFrame.querySelectorAll(SELECTORS.INLINE_CONTAINER);
@@ -616,23 +928,68 @@ function applyVisibilityFilter(visibilityState, showAllState) {
       }
     }
 
-    if (showAllState) {
-      // Show all CodeRabbit timeline items, hide turbo-frames with hidden severities
-      allTimelineItems.forEach(container => {
-        try {
-          const timelineAuthorLink = container.querySelector(SELECTORS.CODERABBIT_AUTHOR_LINK);
+    /**
+     * Check if timeline item contains a custom bot that should be hidden
+     */
+    function isCustomBotHidden(timelineItem) {
+      if (!customBots || Object.keys(customBots).length === 0) return false;
+      
+      // Get all author links in this timeline item
+      const authorLinks = timelineItem.querySelectorAll(SELECTORS.AUTHOR_LINK);
+      
+      for (const authorLink of authorLinks) {
+        const authorName = authorLink.textContent.trim().toLowerCase();
+        
+        // Check if this author matches any custom bot
+        for (const [botName, showAll] of Object.entries(customBots)) {
+          if (authorName.includes(botName.toLowerCase())) {
+            return !showAll; // Return true if bot should be hidden (showAll = false)
+          }
+        }
+      }
+      
+      return false;
+    }
 
-          if (timelineAuthorLink) {
+    /**
+     * Check if author is CodeRabbit
+     */
+    function isCodeRabbit(container) {
+      return !!container.querySelector(SELECTORS.CODERABBIT_AUTHOR_LINK);
+    }
+
+    // Process all timeline items
+    allTimelineItems.forEach(container => {
+      try {
+        // Check if this timeline item contains a custom bot that should be hidden
+        const shouldHideCustomBot = isCustomBotHidden(container);
+
+        if (shouldHideCustomBot) {
+          // Hide entire timeline item for custom bots
+          container.style.display = 'none';
+          container.setAttribute('data-custom-bot-hidden', 'true');
+          return;
+        } else {
+          // Remove custom bot hiding (might still be hidden by CodeRabbit filters)
+          container.removeAttribute('data-custom-bot-hidden');
+        }
+
+        // Apply CodeRabbit-specific filtering
+        const isCodeRabbitComment = isCodeRabbit(container);
+        
+        if (isCodeRabbitComment) {
+          const turboFrames = container.querySelectorAll(SELECTORS.TURBO_FRAME);
+
+          if (coderabbitShowAllState) {
+            // Show all CodeRabbit timeline items, hide turbo-frames with hidden severities
             container.style.display = '';
             container.removeAttribute('data-coderabbit-hidden');
-
-            const turboFrames = container.querySelectorAll(SELECTORS.TURBO_FRAME);
 
             turboFrames.forEach(turboFrame => {
               try {
                 const severity = getTurboFrameSeverity(turboFrame);
 
-                if (severity && visibilityState[severity] === false) {
+                if (severity && coderabbitVisibilityState[severity] === false) {
                   turboFrame.style.display = 'none';
                   turboFrame.setAttribute('data-coderabbit-hidden', 'true');
                 } else {
@@ -643,20 +1000,8 @@ function applyVisibilityFilter(visibilityState, showAllState) {
                 console.error('Error processing turbo-frame in show-all mode:', error);
               }
             });
-          }
-        } catch (error) {
-          console.error('Error processing timeline item in show-all mode:', error);
-        }
-      });
-    } else {
-      // Show timeline items + turbo-frames only if they contain visible severities
-      allTimelineItems.forEach(container => {
-        try {
-          const timelineAuthorLink = container.querySelector(SELECTORS.CODERABBIT_AUTHOR_LINK);
-
-          if (timelineAuthorLink) {
-            const turboFrames = container.querySelectorAll(SELECTORS.TURBO_FRAME);
-
+          } else {
+            // Show timeline items + turbo-frames only if they contain visible severities
             container.style.display = '';
             container.removeAttribute('data-coderabbit-hidden');
 
@@ -666,7 +1011,7 @@ function applyVisibilityFilter(visibilityState, showAllState) {
               try {
                 const severity = getTurboFrameSeverity(turboFrame);
 
-                if (severity && visibilityState[severity] === true) {
+                if (severity && coderabbitVisibilityState[severity] === true) {
                   turboFrame.style.display = '';
                   turboFrame.removeAttribute('data-coderabbit-hidden');
                   hasVisibleTurboFrame = true;
@@ -684,11 +1029,14 @@ function applyVisibilityFilter(visibilityState, showAllState) {
               container.setAttribute('data-coderabbit-hidden', 'true');
             }
           }
-        } catch (error) {
-          console.error('Error processing timeline item in hide-all mode:', error);
+        } else {
+          // Not a CodeRabbit comment and not a custom bot - ensure it's visible
+          container.style.display = '';
         }
-      });
-    }
+      } catch (error) {
+        console.error('Error processing timeline item:', error);
+      }
+    });
   } catch (error) {
     console.error('Error in applyVisibilityFilter:', error);
   }
