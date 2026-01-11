@@ -5,7 +5,8 @@
   "description": "Hide CodeRabbit bot comments on GitHub PRs",
   "permissions": [
     "activeTab",
-    "scripting"
+    "scripting",
+    "storage"
   ],
   "host_permissions": [
     "https://github.com/*"
