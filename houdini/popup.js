@@ -477,7 +477,7 @@ class UIController {
   async handleSaveAsDefault() {
     const success = await filterState.saveAsDefault();
     if (success) {
-      this.showStatus('Saved as default settings ✓', 'success');
+      this.showStatus('Saved as default settings', 'success');
     } else {
       this.showStatus('Error saving defaults', 'error');
     }
