@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Hide CodeRabbit Comments",
+  "name": "Houdini",
   "version": "1.0",
-  "description": "Hide CodeRabbit bot comments on GitHub PRs",
+  "description": "Show or hide bot comments on GitHub PRs",
   "permissions": [
     "activeTab",
     "scripting",

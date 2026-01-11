@@ -248,7 +248,7 @@ const filterState = new FilterState();
  */
 class UIController {
   constructor() {
-    this.severityButtons = {};
+    this.severityToggles = {};
     this.currentTabId = null;
   }
 
@@ -269,12 +269,15 @@ class UIController {
       await filterState.load(tab.id);
 
       // Update UI to reflect loaded state
-      this.updateShowHideAllButtons();
+      this.updateCodeRabbitAllToggle();
       this.updateCustomBotUI();
 
       // Scan and build severity controls
       const severities = await this.scanSeverities(tab.id);
       this.buildSeverityControls(severities);
+
+      // Setup event listeners
+      this.setupEventListeners();
 
       // Apply loaded settings
       await this.applyFilters();
@@ -282,6 +285,43 @@ class UIController {
     } catch (error) {
       console.error('Error initializing popup:', error);
       this.showStatus('Error initializing extension: ' + error.message, 'error');
+    }
+  }
+
+  /**
+   * Setup all event listeners
+   */
+  setupEventListeners() {
+    // CodeRabbit All toggle
+    const coderabbitAllCheckbox = document.getElementById('coderabbitAllCheckbox');
+    if (coderabbitAllCheckbox) {
+      coderabbitAllCheckbox.onchange = (e) => this.handleCodeRabbitAllToggle(e.target.checked);
+    }
+
+    // Custom bot All toggle
+    const customBotAllCheckbox = document.getElementById('customBotAllCheckbox');
+    if (customBotAllCheckbox) {
+      customBotAllCheckbox.onchange = (e) => this.handleCustomBotAllToggle(e.target.checked);
+    }
+
+    // Add bot button
+    const addBotBtn = document.getElementById('addBotBtn');
+    if (addBotBtn) {
+      addBotBtn.onclick = () => this.handleAddCustomBots();
+    }
+
+    // Enter key in bot input
+    const botNameInput = document.getElementById('botNameInput');
+    if (botNameInput) {
+      botNameInput.onkeypress = (e) => {
+        if (e.key === 'Enter') this.handleAddCustomBots();
+      };
+    }
+
+    // Save as default button
+    const saveAsDefaultBtn = document.getElementById('saveAsDefaultBtn');
+    if (saveAsDefaultBtn) {
+      saveAsDefaultBtn.onclick = () => this.handleSaveAsDefault();
     }
   }
 
@@ -360,56 +400,65 @@ class UIController {
       const count = availableSeverities[severity] || 0;
       if (count === 0) return; // Skip if no comments
 
-      const group = this.createSeverityGroup(severity, count, state.coderabbit.visibilityState[severity]);
-      container.appendChild(group);
+      const item = this.createSeverityFilterItem(severity, count, state.coderabbit.visibilityState[severity]);
+      container.appendChild(item);
     });
   }
 
   /**
-   * Create a severity group UI element
+   * Create a severity filter item with toggle switch
    */
-  createSeverityGroup(severity, count, isVisible) {
-    const group = document.createElement('div');
-    group.className = 'severity-group';
+  createSeverityFilterItem(severity, count, isVisible) {
+    const item = document.createElement('div');
+    item.className = 'filter-item';
 
     const label = document.createElement('div');
     label.className = 'severity-label';
     label.innerHTML = `
       <span>${severity}</span>
-      <span style="color: #57606a; font-size: 11px;">(${count})</span>
+      <span class="count">(${count})</span>
     `;
 
-    const buttons = document.createElement('div');
-    buttons.className = 'toggle-buttons';
+    const toggle = document.createElement('label');
+    toggle.className = 'toggle-switch';
+    
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.checked = isVisible;
+    checkbox.onchange = (e) => this.handleSeverityToggle(severity, e.target.checked);
 
-    const showBtn = this.createToggleButton('Show', isVisible, () => {
-      this.handleSeverityToggle(severity, true);
-    });
+    const slider = document.createElement('span');
+    slider.className = 'slider';
 
-    const hideBtn = this.createToggleButton('Hide', !isVisible, () => {
-      this.handleSeverityToggle(severity, false);
-    });
+    toggle.appendChild(checkbox);
+    toggle.appendChild(slider);
 
-    this.severityButtons[severity] = { showBtn, hideBtn };
+    item.appendChild(label);
+    item.appendChild(toggle);
 
-    buttons.appendChild(showBtn);
-    buttons.appendChild(hideBtn);
+    // Store reference to checkbox
+    this.severityToggles[severity] = checkbox;
 
-    group.appendChild(label);
-    group.appendChild(buttons);
-
-    return group;
+    return item;
   }
 
   /**
-   * Create a toggle button
+   * Handle CodeRabbit All toggle
    */
-  createToggleButton(text, isActive, onClick) {
-    const btn = document.createElement('button');
-    btn.className = isActive ? 'toggle-btn active' : 'toggle-btn';
-    btn.textContent = text;
-    btn.onclick = onClick;
-    return btn;
+  async handleCodeRabbitAllToggle(isChecked) {
+    try {
+      filterState.setShowAll(isChecked);
+      
+      // Update all severity toggles
+      Object.values(this.severityToggles).forEach(checkbox => {
+        checkbox.checked = isChecked;
+      });
+
+      await this.applyFilters();
+    } catch (error) {
+      console.error('Error toggling CodeRabbit all:', error);
+      this.showStatus('Error toggling visibility', 'error');
+    }
   }
 
   /**
@@ -418,18 +467,6 @@ class UIController {
   async handleSeverityToggle(severity, isVisible) {
     try {
       filterState.setSeverityVisibility(severity, isVisible);
-
-      const buttons = this.severityButtons[severity];
-      if (buttons) {
-        if (isVisible) {
-          buttons.showBtn.classList.add('active');
-          buttons.hideBtn.classList.remove('active');
-        } else {
-          buttons.showBtn.classList.remove('active');
-          buttons.hideBtn.classList.add('active');
-        }
-      }
-
       await this.applyFilters();
     } catch (error) {
       console.error('Error toggling severity:', error);
@@ -438,64 +475,13 @@ class UIController {
   }
 
   /**
-   * Handle show all button click
+   * Update CodeRabbit All toggle state
    */
-  async handleShowAll() {
-    try {
-      filterState.setShowAll(true);
-      this.updateAllButtons(true);
-      await this.applyFilters();
-    } catch (error) {
-      console.error('Error showing all:', error);
-      this.showStatus('Error showing all', 'error');
-    }
-  }
-
-  /**
-   * Handle hide all button click
-   */
-  async handleHideAll() {
-    try {
-      filterState.setShowAll(false);
-      this.updateAllButtons(false);
-      await this.applyFilters();
-    } catch (error) {
-      console.error('Error hiding all:', error);
-      this.showStatus('Error hiding all', 'error');
-    }
-  }
-
-  /**
-   * Update all button states
-   */
-  updateAllButtons(showAll) {
-    this.updateShowHideAllButtons();
-
-    Object.values(this.severityButtons).forEach(({ showBtn, hideBtn }) => {
-      if (showAll) {
-        showBtn?.classList.add('active');
-        hideBtn?.classList.remove('active');
-      } else {
-        showBtn?.classList.remove('active');
-        hideBtn?.classList.add('active');
-      }
-    });
-  }
-
-  /**
-   * Update show/hide all buttons
-   */
-  updateShowHideAllButtons() {
+  updateCodeRabbitAllToggle() {
     const state = filterState.get();
-    const showAllBtn = document.getElementById('showAllBtn');
-    const hideAllBtn = document.getElementById('hideAllBtn');
-
-    if (state.coderabbit.showAllState) {
-      showAllBtn?.classList.add('active');
-      hideAllBtn?.classList.remove('active');
-    } else {
-      showAllBtn?.classList.remove('active');
-      hideAllBtn?.classList.add('active');
+    const checkbox = document.getElementById('coderabbitAllCheckbox');
+    if (checkbox) {
+      checkbox.checked = state.coderabbit.showAllState;
     }
   }
 
@@ -521,7 +507,7 @@ class UIController {
         allToggleContainer.style.display = 'none';
       } else {
         allToggleContainer.style.display = '';
-        this.updateCustomBotAllButtons();
+        this.updateCustomBotAllToggle();
       }
     }
 
@@ -538,46 +524,33 @@ class UIController {
   }
 
   /**
-   * Update the "All" toggle buttons for custom bots
+   * Update the "All" toggle for custom bots
    */
-  updateCustomBotAllButtons() {
+  updateCustomBotAllToggle() {
     const state = filterState.get();
     const botNames = Object.keys(state.customBots);
     
     if (botNames.length === 0) return;
 
-    // Check if all bots are shown or all are hidden
+    // Check if all bots are shown
     const allShown = botNames.every(name => state.customBots[name] === true);
-    const allHidden = botNames.every(name => state.customBots[name] === false);
 
-    const showBtn = document.getElementById('customBotShowAllBtn');
-    const hideBtn = document.getElementById('customBotHideAllBtn');
-
-    if (showBtn && hideBtn) {
-      if (allShown) {
-        showBtn.classList.add('active');
-        hideBtn.classList.remove('active');
-      } else if (allHidden) {
-        showBtn.classList.remove('active');
-        hideBtn.classList.add('active');
-      } else {
-        // Mixed state - no button active
-        showBtn.classList.remove('active');
-        hideBtn.classList.remove('active');
-      }
+    const checkbox = document.getElementById('customBotAllCheckbox');
+    if (checkbox) {
+      checkbox.checked = allShown;
     }
   }
 
   /**
    * Create a custom bot list item
    */
-    createCustomBotItem(botName, showAll) {
+  createCustomBotItem(botName, showAll) {
     const item = document.createElement('div');
     item.className = 'custom-bot-item';
 
     const removeBtn = document.createElement('button');
     removeBtn.className = 'remove-btn';
-    removeBtn.textContent = '×';;
+    removeBtn.textContent = '×';
     removeBtn.title = 'Remove filter';
     removeBtn.onclick = () => this.handleRemoveCustomBot(botName);
 
@@ -585,26 +558,43 @@ class UIController {
     nameLabel.className = 'bot-name';
     nameLabel.textContent = botName;
 
-    const buttons = document.createElement('div');
-    buttons.className = 'toggle-buttons';
+    const toggle = document.createElement('label');
+    toggle.className = 'toggle-switch';
+    
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.checked = showAll;
+    checkbox.onchange = (e) => this.handleCustomBotToggle(botName, e.target.checked);
 
-    const showBtn = this.createToggleButton('Show', showAll, () => {
-        this.handleCustomBotToggle(botName, true);
-    });
+    const slider = document.createElement('span');
+    slider.className = 'slider';
 
-    const hideBtn = this.createToggleButton('Hide', !showAll, () => {
-        this.handleCustomBotToggle(botName, false);
-    });
+    toggle.appendChild(checkbox);
+    toggle.appendChild(slider);
 
-    buttons.appendChild(showBtn);
-    buttons.appendChild(hideBtn);
-
-    item.appendChild(removeBtn);    // First: Remove button
-    item.appendChild(nameLabel);    // Second: Bot name
-    item.appendChild(buttons);      // Third: Show/Hide buttons
+    item.appendChild(removeBtn);
+    item.appendChild(nameLabel);
+    item.appendChild(toggle);
 
     return item;
+  }
+/**
+   * Handle Custom Bot All toggle
+   */
+  async handleCustomBotAllToggle(isChecked) {
+    const botNames = filterState.getCustomBotNames();
+    if (botNames.length === 0) {
+      this.showStatus('No custom bot filters', 'info');
+      return;
     }
+
+    botNames.forEach(botName => {
+      filterState.setCustomBot(botName, isChecked);
+    });
+
+    this.updateCustomBotUI();
+    await this.applyFilters();
+  }
 
   /**
    * Handle adding custom bots from input
@@ -661,7 +651,7 @@ class UIController {
   async handleCustomBotToggle(botName, showAll) {
     try {
       filterState.setCustomBot(botName, showAll);
-      this.updateCustomBotUI();
+      this.updateCustomBotAllToggle();
       await this.applyFilters();
     } catch (error) {
       console.error('Error toggling custom bot:', error);
@@ -682,42 +672,6 @@ class UIController {
       console.error('Error removing custom bot:', error);
       this.showStatus('Error removing bot filter', 'error');
     }
-  }
-
-  /**
-   * Handle show all custom bots
-   */
-  async handleShowAllCustomBots() {
-    const botNames = filterState.getCustomBotNames();
-    if (botNames.length === 0) {
-      this.showStatus('No custom bot filters', 'info');
-      return;
-    }
-
-    botNames.forEach(botName => {
-      filterState.setCustomBot(botName, true);
-    });
-
-    this.updateCustomBotUI();
-    await this.applyFilters();
-  }
-
-  /**
-   * Handle hide all custom bots
-   */
-  async handleHideAllCustomBots() {
-    const botNames = filterState.getCustomBotNames();
-    if (botNames.length === 0) {
-      this.showStatus('No custom bot filters', 'info');
-      return;
-    }
-
-    botNames.forEach(botName => {
-      filterState.setCustomBot(botName, false);
-    });
-
-    this.updateCustomBotUI();
-    await this.applyFilters();
   }
 
   /**
@@ -764,18 +718,6 @@ class UIController {
   }
 
   /**
-   * Save current settings as global defaults
-   */
-  async handleSaveAsDefault() {
-    const success = await filterState.saveAsDefault();
-    if (success) {
-      this.showStatus('Saved as default settings ✓', 'success');
-    } else {
-      this.showStatus('Error saving defaults', 'error');
-    }
-  }
-
-  /**
    * Show status message
    */
   showStatus(message, type) {
@@ -805,25 +747,6 @@ class UIController {
 const ui = new UIController();
 
 document.addEventListener('DOMContentLoaded', () => ui.init());
-
-// CodeRabbit filter buttons
-document.getElementById('showAllBtn')?.addEventListener('click', () => ui.handleShowAll());
-document.getElementById('hideAllBtn')?.addEventListener('click', () => ui.handleHideAll());
-
-// Custom bot buttons
-document.getElementById('addBotBtn')?.addEventListener('click', () => ui.handleAddCustomBots());
-document.getElementById('customBotShowAllBtn')?.addEventListener('click', () => ui.handleShowAllCustomBots());
-document.getElementById('customBotHideAllBtn')?.addEventListener('click', () => ui.handleHideAllCustomBots());
-
-// Allow Enter key to add bots
-document.getElementById('botNameInput')?.addEventListener('keypress', (e) => {
-  if (e.key === 'Enter') {
-    ui.handleAddCustomBots();
-  }
-});
-
-// Save as default button
-document.getElementById('saveAsDefaultBtn')?.addEventListener('click', () => ui.handleSaveAsDefault());
 
 // ============================================================================
 // INJECTED FUNCTIONS (executed in page context)
